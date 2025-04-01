@@ -1,221 +1,186 @@
-import streamlit as st
-import json
 import logging
-from typing import Dict, Any, List, Union, Optional
+from typing import Dict, List, Optional, Union
+import json
+from agent_brain import AgentBrain
+from tools import AVAILABLE_TOOLS
 
-# --- Import custom modules ---
-try:
-    from agent_brain import AgentBrain
-    from tools import AVAILABLE_TOOLS
-except ImportError as e:
-    st.error(f"Fatal Error: Could not import modules. Ensure correct paths. Details: {e}")
-    st.stop()
-
-# --- Logging Setup ---
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+# Logging Setup
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger(__name__)
 
-# --- Page Configuration ---
-st.set_page_config(
-    page_title="FoodieSpot AI Assistant (Delhi)",
-    page_icon="🤖",
-    layout="centered",
-    initial_sidebar_state="collapsed",
-)
+class MainProcessor:
+    """Central processing unit for FoodieSpot AI Reservation Assistant."""
 
-# --- Custom CSS ---
-# (Keep your CSS markdown here)
-st.markdown("""
-<style>
-    /* Dark Gradient Background */
-    .stApp {
-        background: linear-gradient(to bottom right, #232526, #414345); /* Dark grey gradient */
-        color: #E0E0E0; /* Light grey text for readability */
-        font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
-    }
-    /* --- Keep all other CSS rules --- */
-    .stChatMessage { border-radius: 10px; padding: 0.8rem 1.1rem; margin-bottom: 0.6rem; box-shadow: 0 3px 5px rgba(0,0,0,0.2); max-width: 85%; border: 1px solid rgba(255, 255, 255, 0.1); }
-    [data-testid="stChatMessage"]:has(div[data-testid="stChatMessageContent"][style*="flex-direction: row-reverse;"]) { background-color: #0b3d91; margin-left: auto; margin-right: 0; color: #FFFFFF; }
-    [data-testid="stChatMessage"]:has(div[data-testid="stChatMessageContent"][style*="flex-direction: row-reverse;"]) div[data-testid="stChatMessageContent"] p { color: #FFFFFF; }
-     [data-testid="stChatMessage"]:has(div[data-testid="stChatMessageContent"][style*="flex-direction: row;"]) { background-color: #3a3f44; margin-right: auto; margin-left: 0; color: #E5E5E5; }
-     [data-testid="stChatMessage"]:has(div[data-testid="stChatMessageContent"][style*="flex-direction: row;"]) div[data-testid="stChatMessageContent"] p { color: #E5E5E5; }
-    .tool-display { background-color: rgba(85, 85, 85, 0.7); color: #ccc; font-style: italic; font-size: 0.9em; padding: 0.5rem 0.8rem; border-radius: 5px; margin-top: 0.3rem; border: 1px dashed rgba(255, 255, 255, 0.2); word-wrap: break-word; }
-    .tool-display strong { color: #ddd; }
-    .tool-display pre { background-color: rgba(0,0,0,0.3); padding: 0.3rem; border-radius: 3px; color: #eee; white-space: pre-wrap; word-wrap: break-word; }
-    .stChatInputContainer { background: linear-gradient(to top, #414345, #232526); border-top: 1px solid rgba(255, 255, 255, 0.15); padding: 1rem; position: sticky; bottom: 0; z-index: 10;}
-    [data-testid="stChatInput"] > div { background-color: #2D2D2D; border-radius: 8px; border: 1px solid rgba(255, 255, 255, 0.2); box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
-     [data-testid="stChatInput"] textarea { background-color: transparent; color: #E0E0E0; }
-    [data-testid="stChatInput"] textarea::placeholder { color: #888; }
-     [data-testid="stChatInput"] button { border: none; background-color: #0b3d91; color: white; }
-    .stHeadingContainer { text-align: center; color: #F5F5F5; margin-bottom: 1.5rem; padding-top: 1.5rem; }
-    h1 { font-weight: 600; letter-spacing: -1px; color: #FFFFFF; }
-    .stHeadingContainer p { color: #B0B0B0; }
-    .stSpinner > div > div { border-top-color: #0b3d91 !important; border-right-color: transparent !important; border-bottom-color: transparent !important; border-left-color: transparent !important; }
-    .stException { background-color: #5c1a1a; border-color: #d9534f; color: #f8d7da; }
-    div[data-testid="stVerticalBlock"] { padding-bottom: 5rem; } /* Adjust if necessary */
-</style>
-""", unsafe_allow_html=True)
+    def __init__(self) -> None:
+        """Initialize the processor with AgentBrain and conversation history."""
+        self.agent = AgentBrain()
+        self.conversation_history: List[Dict[str, str]] = []
+        self.tools = AVAILABLE_TOOLS
 
-# --- App Header ---
-st.markdown("<div class='stHeadingContainer'><h1>🤖 FoodieSpot AI Assistant (Delhi)</h1><p>Find restaurants and book tables with your AI helper!</p></div>", unsafe_allow_html=True)
+    def process_user_input(self, user_input: str) -> Dict[str, str]:
+        """
+        Process user input, coordinate with LLM and tools, and return a response.
 
-# --- Initialize Agent Brain (ONCE per session) ---
-if 'agent_brain' not in st.session_state:
-    try:
-        st.session_state.agent_brain = AgentBrain()
-        logger.info("AgentBrain (Native Tool Calling) initialized and stored in session state.")
-    except (ValueError, Exception) as e:
-        logger.error(f"Fatal Error: Failed to initialize AgentBrain: {e}", exc_info=True)
-        st.error(f"Could not initialize AI Agent. Check config. Error: {e}")
-        st.stop()
-agent_brain = st.session_state.agent_brain
+        Args:
+            user_input: User’s input string from app.py.
 
-# --- Initialize Chat History in Session State ---
-if "messages" not in st.session_state:
-    st.session_state.messages: List[Dict[str, Any]] = [
-        {"role": "assistant", "content": "Welcome to FoodieSpot! I can help you find restaurants and make reservations in Delhi. How can I assist?"}
-    ]
+        Returns:
+            Dict with 'message' (user-friendly response) and 'status' ('success', 'error').
+        """
+        logger.info(f"Processing user input: {user_input}")
 
-# --- Display Chat History ---
-message_container = st.container()
-with message_container:
-    for message in st.session_state.messages:
-        role = message.get("role")
-        content = message.get("content")
+        # Add user input to history
+        self.conversation_history.append({"role": "user", "content": user_input})
 
-        if role == "assistant":
-            if content:
-                with st.chat_message("assistant"): st.markdown(content)
-        elif role == "user":
-            with st.chat_message("user"): st.markdown(content)
-        elif role == "tool":
-             with st.chat_message("assistant", avatar="⚙️"):
-                 tool_name = message.get("name", "unknown_tool")
-                 tool_content_str = message.get("content", "{}")
-                 try:
-                     tool_content_dict = json.loads(tool_content_str)
-                     is_error = tool_content_dict.get("status") == "error" or "error" in tool_content_dict
-                     display_content = json.dumps(tool_content_dict, indent=2)
-                 except json.JSONDecodeError:
-                     is_error = False; display_content = tool_content_str
-                 st.markdown(f"""<div class="tool-display {'tool-error' if is_error else ''}">"""
-                             f"""<strong>Executed:</strong> <code>{tool_name}</code><br>"""
-                             f"""<strong>Result:</strong> <pre>{display_content}</pre></div>""",
-                             unsafe_allow_html=True)
+        try:
+            # Get LLM response from AgentBrain
+            llm_response = self.agent.process_message(user_input, self.conversation_history)
 
-# --- Handle User Input ---
-if prompt := st.chat_input("Ask about Delhi restaurants..."):
-    logger.info(f"User input: {prompt}")
+            if llm_response["response_type"] == "text":
+                # Direct text response from LLM
+                response_message = llm_response["content"]
+                self.conversation_history.append({"role": "assistant", "content": response_message})
+                logger.info(f"Text response: {response_message}")
+                return {"status": "success", "message": response_message}
 
-    # 1. Add user message to history
-    st.session_state.messages.append({"role": "user", "content": prompt})
+            elif llm_response["response_type"] == "tool_calls":
+                # Handle tool calls
+                tool_results = self._process_tool_calls(llm_response["content"])
+                final_response = self._format_tool_results(tool_results)
+                self.conversation_history.append({"role": "assistant", "content": final_response})
+                logger.info(f"Tool-based response: {final_response}")
+                return {"status": "success", "message": final_response}
 
-    # 2. Start agent processing logic within the assistant's chat context
-    with message_container:
-        with st.chat_message("assistant"):
-            current_spinner = st.spinner("Thinking...") # Define spinner before try
-            try:
-                # --- Agent Processing Loop ---
-                max_turns = 5
-                turn_count = 0
-                while turn_count < max_turns:
-                    turn_count += 1
-                    logger.info(f"--- Agent Turn {turn_count} ---")
+            elif llm_response["response_type"] == "error":
+                # LLM error handling
+                logger.warning(f"LLM error: {llm_response['message']}")
+                return {"status": "error", "message": llm_response["message"]}
 
-                    # Call AgentBrain with CURRENT history
-                    response_type, response_data, raw_assistant_message = agent_brain.get_response(st.session_state.messages)
-                    logger.info(f"Agent response type: {response_type}")
+            else:
+                logger.error(f"Unknown response type: {llm_response['response_type']}")
+                return {
+                    "status": "error",
+                    "message": "Hmm, something unexpected happened. Let’s try that again!"
+                }
 
-                    # Store raw assistant response (content or tool_calls)
-                    if raw_assistant_message:
-                        st.session_state.messages.append(raw_assistant_message)
+        except Exception as e:
+            logger.exception(f"Error in process_user_input: {e}")
+            return {
+                "status": "error",
+                "message": "Oops! Something went wrong. Please try again in a moment."
+            }
 
-                    # --- Process Response ---
-                    if response_type == "error":
-                        error_msg = f"🤖 Sorry, an error occurred: {response_data}"
-                        st.error(error_msg) # Display error inside the assistant bubble
-                        if not raw_assistant_message: # Add error to history if not captured
-                            st.session_state.messages.append({"role": "assistant", "content": error_msg})
-                        break # Exit loop
+    def _process_tool_calls(self, tool_calls: List[Dict[str, Union[str, Dict]]]) -> List[Dict[str, Union[str, Dict]]]:
+        """
+        Execute tools based on LLM tool calls and return results.
 
-                    elif response_type == "text":
-                        # Final text response
-                        if response_data: st.markdown(response_data) # Display the text
-                        else: st.markdown("...")
-                        break # Exit loop, turn complete
+        Args:
+            tool_calls: List of tool call dictionaries from AgentBrain.
 
-                    elif response_type == "tool_calls":
-                        # Execute tools
-                        current_spinner.text = "Running tools..."
-                        tool_messages_for_next_call = []
-                        any_tool_error = False; error_details = ""
+        Returns:
+            List of tool execution results with status and messages.
+        """
+        results = []
+        for call in tool_calls:
+            tool_name = call["name"]
+            arguments = call["arguments"]
+            logger.info(f"Executing tool: {tool_name} with args: {arguments}")
 
-                        for tool_call in response_data:
-                            tool_id = tool_call["id"]; tool_name = tool_call["tool_name"]; tool_args = tool_call["arguments"]
-                            logger.info(f"Executing tool: {tool_name} (ID: {tool_id}) Args: {tool_args}")
-                            if tool_name in AVAILABLE_TOOLS:
-                                tool_function = AVAILABLE_TOOLS[tool_name]
-                                try:
-                                    tool_result = tool_function(**tool_args)
-                                    tool_result_content = json.dumps(tool_result)
-                                    logger.info(f"Tool '{tool_name}' (ID: {tool_id}) successful.")
-                                    tool_messages_for_next_call.append({"role": "tool", "tool_call_id": tool_id, "name": tool_name, "content": tool_result_content})
-                                except Exception as e:
-                                    logger.exception(f"Tool '{tool_name}' error.", exc_info=True)
-                                    error_msg = f"Tool {tool_name} Error: {e}"
-                                    tool_messages_for_next_call.append({"role": "tool", "tool_call_id": tool_id, "name": tool_name, "content": json.dumps({"error": error_msg})})
-                                    any_tool_error = True; error_details += f"{tool_name}: {error_msg}\n"
-                            else:
-                                logger.error(f"Tool '{tool_name}' not found.")
-                                error_msg = "Tool function not found."
-                                tool_messages_for_next_call.append({"role": "tool", "tool_call_id": tool_id, "name": tool_name, "content": json.dumps({"error": error_msg})})
-                                any_tool_error = True; error_details += f"{tool_name}: {error_msg}\n"
+            if tool_name in self.tools:
+                try:
+                    tool_result = self.tools[tool_name](**arguments)
+                    results.append({
+                        "tool_name": tool_name,
+                        "status": tool_result.get("status", "success"),
+                        "result": tool_result
+                    })
+                except Exception as e:
+                    logger.exception(f"Tool execution failed for {tool_name}: {e}")
+                    results.append({
+                        "tool_name": tool_name,
+                        "status": "error",
+                        "result": {"message": f"Sorry, I couldn’t complete that step ({tool_name})."}
+                    })
+            else:
+                logger.warning(f"Unknown tool: {tool_name}")
+                results.append({
+                    "tool_name": tool_name,
+                    "status": "error",
+                    "result": {"message": f"I don’t have a tool called {tool_name} yet!"}
+                })
+        return results
 
-                        # Add tool results to history BEFORE next call
-                        st.session_state.messages.extend(tool_messages_for_next_call)
+    def _format_tool_results(self, tool_results: List[Dict[str, Union[str, Dict]]]) -> str:
+        """
+        Merge tool results into a natural language response.
 
-                        # Display tool results visually
-                        for tool_msg in tool_messages_for_next_call:
-                            tool_name_disp = tool_msg.get("name", "unknown_tool")
-                            tool_content_str_disp = tool_msg.get("content", "{}")
-                            try:
-                                tool_content_dict_disp = json.loads(tool_content_str_disp); is_error_disp = tool_content_dict_disp.get("status") == "error" or "error" in tool_content_dict_disp; display_content_disp = json.dumps(tool_content_dict_disp, indent=2)
-                            except json.JSONDecodeError: is_error_disp = False; display_content_disp = tool_content_str_disp
-                            st.markdown(f"""<div class="tool-display {'tool-error' if is_error_disp else ''}">"""
-                                        f"""<strong>⚙️ Executed:</strong> <code>{tool_name_disp}</code><br>"""
-                                        f"""<strong>Result:</strong> <pre>{display_content_disp}</pre></div>""",
-                                        unsafe_allow_html=True)
+        Args:
+            tool_results: List of tool execution results.
 
-                        # Optional: Check if only errors occurred and break early
-                        # if any_tool_error and not any('error' not in json.loads(m['content']) for m in tool_messages_for_next_call if 'content' in m):
-                        #    error_summary = "Sorry, errors occurred using tools:\n" + error_details
-                        #    st.error(error_summary)
-                        #    st.session_state.messages.append({"role": "assistant", "content": error_summary})
-                        #    break
+        Returns:
+            User-friendly response string.
+        """
+        if not tool_results:
+            return "I couldn’t find anything to do with that request. How can I assist you?"
 
-                        # Continue loop for the second call to LLM
-                        current_spinner.text = "Formulating response..."
-                        continue # Go to next iteration of the while loop
+        response_lines = []
+        for result in tool_results:
+            tool_name = result["tool_name"]
+            status = result["status"]
+            tool_output = result["result"]
 
-                    elif response_type == "stop":
-                        st.markdown("...")
-                        if not raw_assistant_message or not raw_assistant_message.get('content'):
-                            st.session_state.messages.append({"role": "assistant", "content": "..."})
-                        break # Exit loop
+            if status == "error":
+                response_lines.append(tool_output["message"])
+            elif tool_name == "find_restaurants":
+                if tool_output["status"] == "success":
+                    restaurant_names = ", ".join(r["name"] for r in tool_output["results"])
+                    response_lines.append(f"Here are some great options: {restaurant_names}. Want to check availability?")
+                else:
+                    response_lines.append(tool_output["message"])
+            elif tool_name == "check_availability":
+                response_lines.append(tool_output["message"])
+            elif tool_name == "make_reservation":
+                if tool_output["status"] == "success":
+                    response_lines.append(tool_output["message"])
+                else:
+                    response_lines.append(f"Booking didn’t work out: {tool_output['message']}")
+            elif tool_name == "get_restaurant_details":
+                if tool_output["status"] == "success":
+                    details = tool_output["details"]
+                    response_lines.append(
+                        f"{details['name']} ({details['cuisine']}) is at {details['address']}. "
+                        f"Open: {details['opening_hours']}. More info: {details['description']}"
+                    )
+                else:
+                    response_lines.append(tool_output["message"])
 
-                # --- End of while loop ---
+        final_response = "\n".join(response_lines)
+        if not final_response:
+            final_response = "I’ve got the info, but I’m not sure how to present it yet. What’s next?"
+        return final_response
 
-            except Exception as main_loop_error: # Catch errors in the main processing loop
-                 logger.exception("Error during agent processing loop.", exc_info=True)
-                 st.error(f"An unexpected error occurred during processing: {main_loop_error}")
-                 # Add error to history
-                 st.session_state.messages.append({"role": "assistant", "content": f"System Error: {main_loop_error}"})
+    def get_conversation_history(self) -> List[Dict[str, str]]:
+        """Return the current conversation history."""
+        return self.conversation_history
 
-            finally:
-                 # This block ALWAYS executes after the try block finishes or if an exception occurs
-                 logger.info("Ensuring spinner is removed after processing.")
-                 current_spinner.empty() # Safely remove the spinner
+def process_input(user_input: str) -> Dict[str, str]:
+    """
+    External interface for app.py to process user input.
 
+    Args:
+        user_input: User’s input string.
 
-    # 3. Rerun at the VERY END to update the display with final results
-    st.rerun()
+    Returns:
+        Dict with 'message' and 'status'.
+    """
+    processor = MainProcessor()  # Singleton-like instance for now; could be persistent
+    return processor.process_user_input(user_input)
+
+if __name__ == "__main__":
+    # For testing purposes only; app.py will call process_input()
+    test_input = "Find Italian restaurants for 4 tomorrow at 7 PM"
+    result = process_input(test_input)
+    logger.info(f"Test result: {json.dumps(result, indent=2)}")

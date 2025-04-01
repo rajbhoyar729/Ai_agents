@@ -1,303 +1,285 @@
 import logging
+from typing import Dict, List, Optional, Any, Union
+from datetime import datetime
+import json
 import random
 import string
-from typing import List, Dict, Optional, Any, Union
 
-# Import the data access layer and the data model
+# Import the data access layer
 from restaurants import RESTAURANT_DATA, Restaurant
 
-# --- Logging Setup ---
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+# Logging Setup
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger(__name__)
 
-# --- Tool Implementation Functions ---
+# Constants for better maintainability
+PEAK_HOUR_START = 19  # 7 PM in 24-hour format
+PEAK_HOUR_END = 21    # 9 PM in 24-hour format
+WEEKEND_DAYS = {4, 5} # Friday (4), Saturday (5) in weekday()
 
-def find_restaurants(cuisine: Optional[str] = None,
-                     location: Optional[str] = None,
-                     party_size: Optional[int] = None,
-                     date: Optional[str] = None, # Included for context, not direct filtering here
-                     time: Optional[str] = None  # Included for context, not direct filtering here
-                     ) -> Dict[str, Union[str, List[Dict[str, str]]]]:
+def validate_date_time(date: str, time: str) -> tuple[bool, str]:
     """
-    Finds restaurants based on cuisine, location, and minimum capacity (derived from party_size).
+    Validates date (YYYY-MM-DD) and time (e.g., '7:00 PM') formats.
+    Returns: (is_valid, error_message_if_invalid)
+    """
+    try:
+        parsed_date = datetime.strptime(date, "%Y-%m-%d")
+        parsed_time = datetime.strptime(time, "%I:%M %p")  # Handles 12-hour AM/PM
+        return True, ""
+    except ValueError as e:
+        logger.warning(f"Invalid date/time format: date={date}, time={time}. Error: {e}")
+        return False, f"Please provide date as YYYY-MM-DD and time as 'H:MM AM/PM' (e.g., '7:00 PM'). Error: {e}"
+
+def find_restaurants(
+    cuisine: Optional[str] = None,
+    location: Optional[str] = None,
+    party_size: Optional[int] = None,
+    date: Optional[str] = None,
+    time: Optional[str] = None
+) -> Dict[str, Union[str, List[Dict[str, str]]]]:
+    """
+    Finds restaurants matching user criteria with ranked results and alternatives.
 
     Args:
-        cuisine: The type of cuisine (e.g., "Italian").
-        location: The area/neighborhood (e.g., "Downtown").
-        party_size: The number of people needing seating.
-        date: The desired date (for context, currently not used in filtering).
-        time: The desired time (for context, currently not used in filtering).
+        cuisine: Type of cuisine (e.g., "Italian").
+        location: Area in Delhi (e.g., "Connaught Place").
+        party_size: Number of people.
+        date: Reservation date (YYYY-MM-DD).
+        time: Reservation time (e.g., "7:00 PM").
 
     Returns:
-        A dictionary containing:
-        - 'status': 'success' or 'not_found'.
-        - 'results': A list of {'id': str, 'name': str} dictionaries for matching restaurants,
-                     or an empty list if none found.
+        Dict with 'status' ('success', 'not_found', 'error'), 'results' (list of restaurant info),
+        and 'message' (user-friendly feedback).
     """
-    logger.info(f"Executing find_restaurants: cuisine='{cuisine}', location='{location}', party_size={party_size}, date='{date}', time='{time}'")
+    logger.info(f"find_restaurants called: cuisine={cuisine}, location={location}, party_size={party_size}, date={date}, time={time}")
 
-    # Basic validation (LLM should provide valid types, but good practice)
-    min_capacity = None
+    # Validate party size
     if party_size is not None:
         try:
-            min_capacity = int(party_size)
-            if min_capacity <= 0:
-                 logger.warning("Party size must be positive.")
-                 min_capacity = 1 # Default to 1 if invalid non-positive provided
-        except (ValueError, TypeError):
-            logger.warning(f"Invalid party_size '{party_size}', ignoring capacity filter.")
-            min_capacity = None # Ignore capacity filter if type is wrong
+            party_size = int(party_size)
+            if party_size <= 0:
+                raise ValueError("Party size must be positive")
+        except (ValueError, TypeError) as e:
+            logger.error(f"Invalid party_size: {party_size}. Error: {e}")
+            return {"status": "error", "message": f"Party size must be a positive number. You provided: {party_size}"}
+
+    # Validate date and time if provided
+    if date and time:
+        is_valid, error_msg = validate_date_time(date, time)
+        if not is_valid:
+            return {"status": "error", "message": error_msg}
 
     try:
-        # Use the search method from the repository
-        matching_restaurants: List[Restaurant] = RESTAURANT_DATA.search(
+        # Search with sorting by capacity (largest first) for better recommendations
+        results: List[Restaurant] = RESTAURANT_DATA.search(
             cuisine=cuisine,
             location=location,
-            min_capacity=min_capacity
+            min_capacity=party_size,
+            sort_by="capacity"
         )
 
-        # Format the results as required by the system prompt description
-        results_list = [{"id": r.id, "name": r.name} for r in matching_restaurants]
-
-        if results_list:
-            logger.info(f"Found {len(results_list)} matching restaurants.")
-            return {"status": "success", "results": results_list}
+        if results:
+            # Format results for user-friendly output
+            formatted_results = [
+                {"id": r.id, "name": r.name, "cuisine": r.cuisine, "location": r.location}
+                for r in results[:5]  # Limit to top 5 for simplicity
+            ]
+            message = f"Found {len(results)} matching restaurants! Here are some options: {', '.join(r['name'] for r in formatted_results)}."
+            logger.info(message)
+            return {"status": "success", "results": formatted_results, "message": message}
         else:
-            logger.info("No restaurants found matching the criteria.")
-            return {"status": "not_found", "results": []}
+            # Suggest alternatives if no exact matches
+            alternatives = RESTAURANT_DATA.search(min_capacity=party_size)
+            if alternatives:
+                alt_names = ", ".join(r.name for r in alternatives[:2])
+                message = f"No exact matches for {cuisine or 'any cuisine'} in {location or 'any location'}. Try these: {alt_names}."
+                logger.info(message)
+                return {"status": "not_found", "results": [], "message": message}
+            else:
+                message = "Sorry, no restaurants match your criteria right now."
+                logger.info(message)
+                return {"status": "not_found", "results": [], "message": message}
 
     except Exception as e:
-        logger.exception("An unexpected error occurred during find_restaurants", exc_info=True)
-        return {"status": "error", "message": "An internal error occurred while searching for restaurants."}
+        logger.exception(f"Error in find_restaurants: {e}")
+        return {"status": "error", "message": "An unexpected error occurred while searching. Please try again."}
 
-
-def check_availability(restaurant_id: str,
-                       party_size: int,
-                       date: str,
-                       time: str) -> Dict[str, str]:
+def check_availability(
+    restaurant_id: str,
+    party_size: int,
+    date: str,
+    time: str
+) -> Dict[str, str]:
     """
-    Checks simulated availability for a given restaurant, party size, date, and time.
+    Checks table availability with realistic simulation and user-friendly feedback.
 
     Args:
-        restaurant_id: The unique ID of the restaurant.
-        party_size: The number of people.
-        date: The desired date (YYYY-MM-DD).
-        time: The desired time (e.g., "7:00 PM").
+        restaurant_id: Unique restaurant ID.
+        party_size: Number of people.
+        date: Reservation date (YYYY-MM-DD).
+        time: Reservation time (e.g., "7:00 PM").
 
     Returns:
-        A dictionary containing:
-        - 'status': 'available', 'unavailable', 'limited', or 'error'.
-        - 'message': A descriptive note about the availability or error.
+        Dict with 'status' ('available', 'limited', 'unavailable', 'error') and 'message'.
     """
-    logger.info(f"Executing check_availability: restaurant_id='{restaurant_id}', party_size={party_size}, date='{date}', time='{time}'")
+    logger.info(f"check_availability called: restaurant_id={restaurant_id}, party_size={party_size}, date={date}, time={time}")
+
+    # Input validation
+    try:
+        party_size = int(party_size)
+        if party_size <= 0:
+            raise ValueError("Party size must be positive")
+    except (ValueError, TypeError) as e:
+        return {"status": "error", "message": f"Party size must be a positive number. You provided: {party_size}"}
+
+    is_valid, error_msg = validate_date_time(date, time)
+    if not is_valid:
+        return {"status": "error", "message": error_msg}
 
     try:
         restaurant = RESTAURANT_DATA.get_by_id(restaurant_id)
         if not restaurant:
-            logger.warning(f"Restaurant ID '{restaurant_id}' not found.")
-            return {"status": "error", "message": f"Restaurant with ID '{restaurant_id}' could not be found."}
+            return {"status": "error", "message": f"No restaurant found with ID '{restaurant_id}'."}
 
-        party_size_int = int(party_size) # Ensure integer
-        if party_size_int <= 0:
-             return {"status": "error", "message": "Party size must be greater than zero."}
+        # Capacity check
+        if party_size > restaurant.max_capacity:
+            message = f"Sorry, {restaurant.name} can’t accommodate {party_size} people (max capacity: {restaurant.max_capacity})."
+            logger.info(message)
+            return {"status": "unavailable", "message": message}
 
-        # --- Simulation Logic ---
-        # 1. Capacity Check
-        if party_size_int > restaurant.max_capacity:
-            logger.info(f"Availability check failed: party size {party_size_int} exceeds max capacity {restaurant.max_capacity} for {restaurant_id}.")
-            return {"status": "unavailable", "message": f"Sorry, the requested party size ({party_size_int}) exceeds the maximum capacity ({restaurant.max_capacity}) for {restaurant.name}."}
+        # Peak time simulation
+        parsed_date = datetime.strptime(date, "%Y-%m-%d")
+        parsed_time = datetime.strptime(time, "%I:%M %p")
+        hour = parsed_time.hour
 
-        # 2. Simple "Busy Times" Simulation (Example)
-        #    Let's make Friday/Saturday 7 PM - 9 PM "limited" if close to capacity
-        #    This is highly simplified!
-        is_peak_time = False
-        try:
-            # Basic check - needs more robust date/time parsing in a real app
-            from datetime import datetime
-            parsed_date = datetime.strptime(date, "%Y-%m-%d")
-            # Simple time check (assumes HH:MM AM/PM or HH:MM format)
-            hour = -1
-            time_lower = time.lower()
-            if "pm" in time_lower and ":" in time_lower:
-                 hour_str = time_lower.split(":")[0]
-                 hour = int(hour_str) + 12 if hour_str != "12" else 12 # Basic PM conversion
-            elif "am" in time_lower and ":" in time_lower:
-                 hour_str = time_lower.split(":")[0]
-                 hour = int(hour_str) if hour_str != "12" else 0 # Basic AM conversion
-            elif ":" in time_lower: # Assume 24hr if no AM/PM
-                hour = int(time_lower.split(":")[0])
+        is_peak = (
+            parsed_date.weekday() in WEEKEND_DAYS and
+            PEAK_HOUR_START <= hour < PEAK_HOUR_END
+        )
 
+        if is_peak and (party_size / restaurant.max_capacity) > 0.7:
+            message = f"Limited availability at {restaurant.name} for {party_size} on {date} at {time}. Earlier or later times might work better."
+            logger.info(message)
+            return {"status": "limited", "message": message}
 
-            # Friday is 4, Saturday is 5 in weekday() (Monday is 0)
-            if parsed_date.weekday() in [4, 5] and 19 <= hour < 21: # 7 PM to 8:59 PM
-                 is_peak_time = True
-        except ValueError:
-            logger.warning(f"Could not parse date '{date}' or time '{time}' for peak time check. Assuming not peak.")
-        except Exception:
-             logger.warning(f"Error during peak time check logic for date '{date}', time '{time}'. Assuming not peak.")
+        message = f"Good news! {restaurant.name} has a table for {party_size} on {date} at {time}."
+        logger.info(message)
+        return {"status": "available", "message": message}
 
-
-        if is_peak_time and (party_size_int / restaurant.max_capacity) > 0.7: # If >70% capacity during peak
-            logger.info(f"Limited availability for {restaurant_id} at peak time {date} {time} due to capacity usage.")
-            return {"status": "limited", "message": f"There is limited availability for {party_size_int} guests at {restaurant.name} around {time} on {date}. We might have slightly earlier or later slots."}
-
-        # 3. Default: Available
-        logger.info(f"Availability check successful for {restaurant_id} at {date} {time}.")
-        return {"status": "available", "message": f"Table for {party_size_int} at {restaurant.name} on {date} at {time} appears to be available."}
-
-    except (ValueError, TypeError) as e:
-        logger.error(f"Invalid input type for check_availability: {e}")
-        return {"status": "error", "message": "Invalid input provided for checking availability (e.g., party size should be a number)."}
     except Exception as e:
-        logger.exception("An unexpected error occurred during check_availability", exc_info=True)
-        return {"status": "error", "message": "An internal error occurred while checking availability."}
+        logger.exception(f"Error in check_availability: {e}")
+        return {"status": "error", "message": "An unexpected error occurred while checking availability."}
 
-
-def make_reservation(restaurant_id: str,
-                     party_size: int,
-                     date: str,
-                     time: str,
-                     user_name: str,
-                     user_contact: str) -> Dict[str, str]:
+def make_reservation(
+    restaurant_id: str,
+    party_size: int,
+    date: str,
+    time: str,
+    user_name: str,
+    user_contact: str
+) -> Dict[str, str]:
     """
-    Simulates making a reservation after checking availability.
+    Makes a reservation with upselling and detailed confirmation.
 
     Args:
-        restaurant_id: The unique ID of the restaurant.
-        party_size: The number of people.
-        date: The reservation date (YYYY-MM-DD).
-        time: The reservation time.
-        user_name: Name for the reservation.
-        user_contact: Contact info (phone/email).
+        restaurant_id: Unique restaurant ID.
+        party_size: Number of people.
+        date: Reservation date (YYYY-MM-DD).
+        time: Reservation time (e.g., "7:00 PM").
+        user_name: Customer’s name.
+        user_contact: Contact info (e.g., phone/email).
 
     Returns:
-        A dictionary containing:
-        - 'status': 'success' or 'failed'.
-        - 'message': Confirmation details or failure reason.
-        - 'confirmation_id' (optional): A unique ID if successful.
+        Dict with 'status' ('success', 'failed'), 'message', and 'confirmation_id' (if success).
     """
-    logger.info(f"Executing make_reservation: restaurant_id='{restaurant_id}', party_size={party_size}, date='{date}', time='{time}', name='{user_name}'")
+    logger.info(f"make_reservation called: restaurant_id={restaurant_id}, party_size={party_size}, date={date}, time={time}, user_name={user_name}")
 
-    # 1. Re-check availability using the same logic
-    availability_result = check_availability(restaurant_id, party_size, date, time)
-
-    if availability_result["status"] not in ["available", "limited"]: # Treat 'limited' as bookable for simulation
-        logger.warning(f"Reservation failed for {restaurant_id}: Availability status was {availability_result['status']}.")
-        return {"status": "failed", "message": f"Reservation failed. Reason: {availability_result['message']}"}
-
-    # 2. Simulate booking success (we are not storing it persistently)
+    # Input validation
     try:
-        restaurant = RESTAURANT_DATA.get_by_id(restaurant_id) # Assumed to exist from check
-        confirmation_id = "FS" + "".join(random.choices(string.ascii_uppercase + string.digits, k=8))
-        success_message = (
-            f"Reservation confirmed for {user_name}! Details:\n"
-            f"- Restaurant: {restaurant.name} ({restaurant_id})\n"
+        party_size = int(party_size)
+        if party_size <= 0:
+            raise ValueError("Party size must be positive")
+    except (ValueError, TypeError) as e:
+        return {"status": "failed", "message": f"Party size must be a positive number. You provided: {party_size}"}
+
+    if not user_name or not user_contact:
+        return {"status": "failed", "message": "Please provide both your name and contact details."}
+
+    is_valid, error_msg = validate_date_time(date, time)
+    if not is_valid:
+        return {"status": "failed", "message": error_msg}
+
+    # Check availability first
+    avail_result = check_availability(restaurant_id, party_size, date, time)
+    if avail_result["status"] not in ["available", "limited"]:
+        return {"status": "failed", "message": f"Cannot book: {avail_result['message']}"}
+
+    try:
+        restaurant = RESTAURANT_DATA.get_by_id(restaurant_id)
+        confirmation_id = f"FS-{''.join(random.choices(string.ascii_uppercase + string.digits, k=8))}"
+        
+        # Upselling opportunity
+        premium_msg = " Want a premium table with a view for an extra fee? Reply 'yes' to upgrade!"
+        message = (
+            f"Reservation confirmed for {user_name} at {restaurant.name}!\n"
             f"- Party Size: {party_size}\n"
             f"- Date: {date}\n"
             f"- Time: {time}\n"
             f"- Confirmation ID: {confirmation_id}\n"
-            f"We look forward to seeing you!"
+            f"We’ll see you soon!{premium_msg if avail_result['status'] == 'available' else ''}"
         )
-        logger.info(f"Reservation simulation successful for {restaurant_id}. Confirmation: {confirmation_id}")
-        return {"status": "success", "message": success_message, "confirmation_id": confirmation_id}
+        logger.info(f"Reservation successful: {confirmation_id}")
+        return {"status": "success", "message": message, "confirmation_id": confirmation_id}
 
     except Exception as e:
-        logger.exception("An unexpected error occurred during make_reservation simulation", exc_info=True)
-        return {"status": "failed", "message": "An internal error occurred while trying to make the reservation."}
-
+        logger.exception(f"Error in make_reservation: {e}")
+        return {"status": "failed", "message": "An unexpected error occurred while booking."}
 
 def get_restaurant_details(restaurant_id: str) -> Dict[str, Union[str, Dict[str, Any]]]:
     """
-    Retrieves detailed information for a specific restaurant.
+    Retrieves detailed restaurant info for users.
 
     Args:
-        restaurant_id: The unique ID of the restaurant.
+        restaurant_id: Unique restaurant ID.
 
     Returns:
-        A dictionary containing:
-        - 'status': 'success' or 'not_found' or 'error'.
-        - 'details': A dictionary of restaurant details if found, else None.
-        - 'message': An error message if status is 'error' or 'not_found'.
+        Dict with 'status' ('success', 'not_found', 'error'), 'details', and 'message'.
     """
-    logger.info(f"Executing get_restaurant_details: restaurant_id='{restaurant_id}'")
+    logger.info(f"get_restaurant_details called: restaurant_id={restaurant_id}")
+
     try:
         restaurant = RESTAURANT_DATA.get_by_id(restaurant_id)
-
         if restaurant:
-            logger.info(f"Details found for restaurant ID '{restaurant_id}'.")
-            # Use .model_dump() for Pydantic v2 or .dict() for Pydantic v1
-            details_dict = restaurant.model_dump() if hasattr(restaurant, 'model_dump') else restaurant.dict()
-            return {"status": "success", "details": details_dict}
+            details = {
+                "id": restaurant.id,
+                "name": restaurant.name,
+                "location": restaurant.location,
+                "cuisine": restaurant.cuisine,
+                "opening_hours": restaurant.opening_hours,
+                "capacity": restaurant.max_capacity,
+                "address": restaurant.address,
+                "phone": restaurant.phone or "Not available",
+                "description": restaurant.description or "No description available"
+            }
+            message = f"Here’s what I found about {restaurant.name} in {restaurant.location}."
+            logger.info(message)
+            return {"status": "success", "details": details, "message": message}
         else:
-            logger.warning(f"Restaurant ID '{restaurant_id}' not found.")
-            return {"status": "not_found", "details": None, "message": f"Sorry, I couldn't find any details for a restaurant with ID '{restaurant_id}'."}
+            message = f"Sorry, I couldn’t find details for restaurant ID '{restaurant_id}'."
+            logger.warning(message)
+            return {"status": "not_found", "details": {}, "message": message}
+
     except Exception as e:
-        logger.exception("An unexpected error occurred during get_restaurant_details", exc_info=True)
-        return {"status": "error", "details": None, "message": "An internal error occurred while retrieving restaurant details."}
+        logger.exception(f"Error in get_restaurant_details: {e}")
+        return {"status": "error", "details": {}, "message": "An unexpected error occurred while fetching details."}
 
-
-# --- Tool Dispatcher ---
-# Maps tool names (as expected by the LLM) to the actual functions
+# Tool Registry for main.py Access
 AVAILABLE_TOOLS = {
     "find_restaurants": find_restaurants,
     "check_availability": check_availability,
     "make_reservation": make_reservation,
-    "get_restaurant_details": get_restaurant_details,
+    "get_restaurant_details": get_restaurant_details
 }
-
-# --- Example Usage (for testing this module directly) ---
-if __name__ == "__main__":
-    print("--- Testing Tools ---")
-
-    # Test find_restaurants
-    print("\n[Test] Finding Italian restaurants for 2 people...")
-    results = find_restaurants(cuisine="Italian", party_size=2, date="2025-04-10", time="6:00 PM")
-    print(json.dumps(results, indent=2))
-
-    print("\n[Test] Finding non-existent cuisine...")
-    results = find_restaurants(cuisine="Martian", party_size=4, date="2025-04-10", time="7:00 PM")
-    print(json.dumps(results, indent=2))
-
-    # Test get_restaurant_details
-    print("\n[Test] Getting details for fs001...")
-    details = get_restaurant_details(restaurant_id="fs001")
-    print(json.dumps(details, indent=2))
-
-    print("\n[Test] Getting details for non-existent fs999...")
-    details = get_restaurant_details(restaurant_id="fs999")
-    print(json.dumps(details, indent=2))
-
-    # Test check_availability
-    print("\n[Test] Checking availability for fs001 (Pasta Palace, cap 60) for 4 people...")
-    avail = check_availability(restaurant_id="fs001", party_size=4, date="2025-04-12", time="7:30 PM") # Assume Sat 7:30 PM is peak
-    print(json.dumps(avail, indent=2))
-
-    print("\n[Test] Checking availability for fs001 for 70 people...")
-    avail = check_availability(restaurant_id="fs001", party_size=70, date="2025-04-10", time="6:00 PM")
-    print(json.dumps(avail, indent=2))
-
-    print("\n[Test] Checking availability for fs001 non-peak...")
-    avail = check_availability(restaurant_id="fs001", party_size=50, date="2025-04-10", time="5:00 PM") # Thurs 5pm
-    print(json.dumps(avail, indent=2))
-
-    # Test make_reservation
-    print("\n[Test] Making reservation for fs005 (Bella Napoli, cap 50) for 2...")
-    booking = make_reservation(restaurant_id="fs005", party_size=2, date="2025-04-11", time="8:00 PM", user_name="Test User", user_contact="test@example.com")
-    print(json.dumps(booking, indent=2))
-
-    print("\n[Test] Making reservation for fs005 for 60 (should fail)...")
-    booking = make_reservation(restaurant_id="fs005", party_size=60, date="2025-04-11", time="8:00 PM", user_name="Test User Large", user_contact="test@example.com")
-    print(json.dumps(booking, indent=2))
-
-    # Test tool dispatcher
-    print("\n[Test] Accessing tool via dispatcher...")
-    tool_name = "find_restaurants"
-    if tool_name in AVAILABLE_TOOLS:
-        func = AVAILABLE_TOOLS[tool_name]
-        print(f"Dispatcher found function: {func.__name__}")
-        # Example call through dispatcher (using previous results variable for simplicity)
-        # Note: Arguments need to be passed correctly in a real scenario
-        # results = func(cuisine="Italian", party_size=2, date="2025-04-10", time="6:00 PM")
-        # print(json.dumps(results, indent=2))
-    else:
-        print(f"Tool '{tool_name}' not found in dispatcher.")

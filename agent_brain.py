@@ -1,190 +1,178 @@
-# agent_brain.py (Native Tool Calling - Refined Prompt)
-
-import os
-import json
 import logging
-from typing import List, Dict, Tuple, Union, Optional, Any
+from typing import Dict, List, Optional, Union, Any  # Ensure 'Any' is included
 from groq import Groq, GroqError
+import json
+import os
 from dotenv import load_dotenv
+from tools import AVAILABLE_TOOLS
 
-# --- Configuration ---
+# Load environment variables
 load_dotenv()
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+
+# Logging Setup
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger(__name__)
 
-# --- Tool Schema Definition (Keep as before) ---
-TOOLS_SCHEMA = [
-    {
-        "type": "function",
-        "function": {
-            "name": "find_restaurants",
-            "description": "Searches for FoodieSpot restaurants in Delhi based on cuisine, location, party size, date, and time.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "cuisine": {"type": "string", "description": "e.g., North Indian, Italian"},
-                    "location": {"type": "string", "description": "Area within Delhi, e.g., Connaught Place"},
-                    "party_size": {"type": "integer"},
-                    "date": {"type": "string", "description": "Format: YYYY-MM-DD"},
-                    "time": {"type": "string", "description": "e.g., 7:00 PM"},
-                },
-                "required": ["party_size", "date", "time"],
-            },
-        },
-    },
-    # --- Keep schemas for check_availability, make_reservation, get_restaurant_details ---
-    {
-        "type": "function",
-        "function": {
-            "name": "check_availability",
-            "description": "Checks if a specific Delhi restaurant has table availability.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "restaurant_id": {"type": "string"}, "party_size": {"type": "integer"},
-                    "date": {"type": "string"}, "time": {"type": "string"},
-                }, "required": ["restaurant_id", "party_size", "date", "time"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "make_reservation",
-            "description": "Creates a new reservation at a specific Delhi restaurant.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "restaurant_id": {"type": "string"}, "party_size": {"type": "integer"},
-                    "date": {"type": "string"}, "time": {"type": "string"},
-                    "user_name": {"type": "string"}, "user_contact": {"type": "string"},
-                }, "required": ["restaurant_id", "party_size", "date", "time", "user_name", "user_contact"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "get_restaurant_details",
-            "description": "Retrieves detailed information about a specific Delhi restaurant.",
-            "parameters": {
-                "type": "object",
-                "properties": {"restaurant_id": {"type": "string"}}, "required": ["restaurant_id"],
-            },
-        },
-    },
-]
+# System Prompt for User Comfort and Tool Use
+SYSTEM_PROMPT = """
+You are FoodieBot, a friendly and helpful AI assistant for FoodieSpot in Delhi, India. Your goal is to make dining reservations easy, enjoyable, and personalized for users. **ONLY handle requests related to Delhi restaurants.**
 
+Speak conversationally and warmly, offering assistance in English or Hindi based on user preference (detect Hindi if used, otherwise default to English). If the user’s request is unclear (e.g., missing date or party size), ask polite clarifying questions like: “Could you tell me how many people and when you’d like to dine?”
+
+Proactively suggest top restaurants or alternatives if the user’s criteria are narrow or unavailable. After using tools, weave results into natural responses (e.g., “I found Bukhara with a table for 4 at 7 PM!”) instead of raw data.
+
+Available tools:
+- `find_restaurants`: Find restaurants by cuisine, location, party size, date, or time.
+- `check_availability`: Check table availability for a specific restaurant.
+- `make_reservation`: Book a table with user details.
+- `get_restaurant_details`: Get detailed info about a restaurant.
+
+Use tools when needed, and always aim to delight the user with a smooth, comforting experience!
+"""
 
 class AgentBrain:
-    """
-    Handles interaction with the LLM via Groq API using native tool calling.
-    Focus: Delhi, India restaurants. Includes prompt refinement for waiting.
-    """
+    """Handles LLM interaction with Groq API and tool invocation for FoodieSpot."""
 
-    # --- System Prompt (Updated to emphasize WAITING for tool results) ---
-    SYSTEM_PROMPT = """
-    You are FoodieBot, an AI assistant for the FoodieSpot restaurant chain in Delhi, India.
-    **IMPORTANT: You ONLY handle requests for Delhi.** Decline requests for other cities politely.
+    def __init__(self) -> None:
+        """Initialize the Groq client with API key."""
+        api_key = os.getenv("GROQ_API_KEY")
+        if not api_key:
+            raise ValueError("GROQ_API_KEY not found in environment variables.")
+        self.client = Groq(api_key=api_key)
+        self.model = "llama3-8b-8192"  # Llama 3.1-8B via Groq
+        self.tools = AVAILABLE_TOOLS   # Tool registry from tools.py
 
-    Your primary purpose is to help users find information and book tables at FoodieSpot restaurants in Delhi using the available tools. Be friendly and conversational. Ask clarifying questions if needed.
-
-    **CRITICAL TOOL USE FLOW:**
-    1. Analyze the user's request (ensure it's for Delhi).
-    2. If external information or an action is needed, decide which tool function to use (e.g., `find_restaurants`, `check_availability`).
-    3. You will then generate a 'tool_calls' request. **STOP generating text after this.**
-    4. The system running the tools will execute the function you requested.
-    5. You will then receive a **new message** in the conversation with the role `tool`. This message contains the results (or errors) from the tool execution. Its `tool_call_id` matches your request.
-    6. **IMPORTANT: WAIT** until you receive this message with `role: tool`. **DO NOT** try to predict or summarize the tool's outcome before receiving the actual results in the `tool` message.
-    7. **ONLY AFTER** receiving the `tool` message(s), formulate your next **conversational response** to the original user, incorporating the information provided in the `content` of the `tool` message(s). Refer to the results clearly.
-    8. If no tool was needed in step 2, respond directly to the user conversationally.
-    9. Before requesting `make_reservation`, always confirm all details with the user conversationally.
-
-    Available Tool Functions: `find_restaurants`, `check_availability`, `make_reservation`, `get_restaurant_details`.
-    """
-
-    def __init__(self, api_key: Optional[str] = None, model: str = "llama-3.1-8b-instant", temperature: float = 0.1): # Lowered temp
-        """Initializes the AgentBrain for native tool calling."""
-        resolved_api_key = api_key or os.getenv("GROQ_API_KEY")
-        if not resolved_api_key:
-            logger.error("Groq API key not provided or found in env vars (GROQ_API_KEY).")
-            raise ValueError("GROQ_API_KEY is required.")
-        try:
-            self.client = Groq(api_key=resolved_api_key)
-            self.model = model
-            self.temperature = temperature # Lower temperature for more deterministic behavior
-            logger.info(f"AgentBrain (Native Tool Calling, Refined Prompt) initialized: {self.model}, Temp: {self.temperature}")
-        except GroqError as e:
-            logger.exception(f"Failed to initialize Groq client: {e}", exc_info=True)
-            raise
-
-    def _prepare_messages(self, conversation_history: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    def process_message(
+        self,
+        user_message: str,
+        conversation_history: Optional[List[Dict[str, str]]] = None
+    ) -> Dict[str, Union[str, List[Dict[str, str]]]]:
         """
-        Formats the message list for the Groq API call for native tool use.
-        Includes system prompt and ensures correct formatting for user, assistant, and tool messages.
-        """
-        # (Keep the _prepare_messages function exactly as in the previous 'native tool calling' update - it should be correct)
-        messages = [{"role": "system", "content": self.SYSTEM_PROMPT}]
-        for msg in conversation_history:
-            role = msg.get("role")
-            if role == "assistant":
-                 message_to_add = {"role": "assistant"}
-                 if "content" in msg and msg["content"] is not None: message_to_add["content"] = msg["content"]
-                 if "tool_calls" in msg and isinstance(msg["tool_calls"], list): message_to_add["tool_calls"] = msg["tool_calls"]
-                 if "content" in message_to_add or "tool_calls" in message_to_add: messages.append(message_to_add)
-            elif role == "user" and msg.get("content") is not None:
-                messages.append({"role": "user", "content": msg["content"]})
-            elif role == "tool" and msg.get("tool_call_id") and msg.get("content") is not None:
-                 messages.append({"role": "tool", "tool_call_id": msg["tool_call_id"], "content": msg["content"]})
-            else: logger.warning(f"Skipping malformed message in history: {msg}")
-        return messages
+        Process user input, invoke tools if needed, and return a response.
 
+        Args:
+            user_message: The user’s input string.
+            conversation_history: List of previous messages for context (optional).
 
-    def get_response(self, conversation_history: List[Dict[str, Any]]) -> Tuple[str, Union[str, List[Dict[str, Any]], None], Optional[Dict]]:
+        Returns:
+            Dict with 'response_type' ('text', 'tool_calls', 'error'),
+            'content' (response or tool call details), and 'message' (user-friendly text).
         """
-        Gets a response from the LLM using native tool calling.
-        Expects the full conversation history.
-        """
-        # (Keep the get_response function exactly as in the previous 'native tool calling' update - it correctly handles the API call and response parsing)
-        messages = self._prepare_messages(conversation_history)
-        logger.info(f"Sending request to LLM ({self.model}) with {len(messages)} messages (Native Tool Call).")
-        # logger.debug(f"Messages payload: {json.dumps(messages, indent=2)}") # Uncomment for detailed debugging
+        logger.info(f"Processing user message: {user_message}")
 
-        raw_assistant_msg_for_history = None # To store the message for history later
+        # Build message history
+        messages = [
+            {"role": "system", "content": SYSTEM_PROMPT}
+        ]
+        if conversation_history:
+            messages.extend(conversation_history)
+        messages.append({"role": "user", "content": user_message})
 
         try:
+            # Call Groq API with tool support
             response = self.client.chat.completions.create(
-                model=self.model, messages=messages, tools=TOOLS_SCHEMA, tool_choice="auto",
-                temperature=self.temperature, max_tokens=1024,
+                model=self.model,
+                messages=messages,
+                tools=[
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": name,
+                            "description": func.__doc__.split('\n')[1].strip() if func.__doc__ else f"{name} tool",
+                            "parameters": {
+                                "type": "object",
+                                "properties": {
+                                    arg: {"type": "string"} for arg in func.__code__.co_varnames[:func.__code__.co_argcount]
+                                },
+                                "required": []
+                            }
+                        }
+                    } for name, func in self.tools.items()
+                ],
+                tool_choice="auto",
+                temperature=0.3,
+                max_tokens=1024
             )
-            response_message = response.choices[0].message
-            finish_reason = response.choices[0].finish_reason
-            raw_assistant_msg_for_history = {"role": "assistant", "content": response_message.content, "tool_calls": response_message.tool_calls if response_message.tool_calls else None,}
-            raw_assistant_msg_for_history = {k: v for k, v in raw_assistant_msg_for_history.items() if v is not None}
 
-            if response_message.tool_calls:
-                logger.info(f"LLM response contains tool calls. Finish reason: {finish_reason}")
-                parsed_tool_calls = []
-                for tool_call in response_message.tool_calls:
-                    function_name = tool_call.function.name; tool_call_id = tool_call.id
-                    try:
-                        arguments = json.loads(tool_call.function.arguments)
-                        parsed_tool_calls.append({"id": tool_call_id, "tool_name": function_name, "arguments": arguments})
-                        logger.info(f"Parsed tool call: ID={tool_call_id}, Name={function_name}, Args={arguments}")
-                    except json.JSONDecodeError as e:
-                        logger.error(f"Failed to parse args for tool call {tool_call_id} ({function_name}): {tool_call.function.arguments}. Error: {e}")
-                        return "error", f"Failed to parse arguments for tool {function_name}.", None
-                    except Exception as e:
-                         logger.error(f"Unexpected error processing tool call {tool_call_id} ({function_name}): {e}")
-                         return "error", f"Unexpected error processing tool call for {function_name}.", None
-                return "tool_calls", parsed_tool_calls, raw_assistant_msg_for_history
-            elif response_message.content is not None:
-                logger.info(f"LLM response contains text content. Finish reason: {finish_reason}")
-                return "text", response_message.content, raw_assistant_msg_for_history
+            # Handle response
+            completion = response.choices[0].message
+
+            if hasattr(completion, "tool_calls") and completion.tool_calls:
+                tool_calls = []
+                for tool_call in completion.tool_calls:
+                    tool_name = tool_call.function.name
+                    if tool_name in self.tools:
+                        try:
+                            args = json.loads(tool_call.function.arguments)
+                            result = self.tools[tool_name](**args)
+                            tool_calls.append({
+                                "name": tool_name,
+                                "arguments": args,
+                                "result": result
+                            })
+                        except json.JSONDecodeError as e:
+                            logger.error(f"Failed to parse tool arguments: {e}")
+                            return {
+                                "response_type": "error",
+                                "content": None,
+                                "message": "Oops! I had trouble understanding that request. Could you try again?"
+                            }
+                    else:
+                        logger.warning(f"Unknown tool called: {tool_name}")
+                logger.info(f"Tool calls generated: {tool_calls}")
+                return {
+                    "response_type": "tool_calls",
+                    "content": tool_calls,
+                    "message": "I’m working on that for you! One moment..."
+                }
+
+            elif completion.content:
+                logger.info(f"Text response generated: {completion.content}")
+                return {
+                    "response_type": "text",
+                    "content": completion.content,
+                    "message": completion.content
+                }
+
             else:
-                 logger.warning(f"LLM response has no tool_calls and no content. Finish reason: {finish_reason}")
-                 return "stop", None, raw_assistant_msg_for_history
+                logger.warning("Empty response from LLM")
+                return {
+                    "response_type": "error",
+                    "content": None,
+                    "message": "Hmm, I didn’t get a clear response. Let’s try that again!"
+                }
+
         except GroqError as e:
-            logger.error(f"Groq API error: {e}", exc_info=True); return "error", f"AI service error ({e.status_code}).", None
+            logger.exception(f"Groq API error: {e}")
+            return {
+                "response_type": "error",
+                "content": None,
+                "message": "Sorry, something went wrong on my end. Please try again in a moment."
+            }
         except Exception as e:
-            logger.exception("Unexpected error in get_response.", exc_info=True); return "error", "Unexpected internal error.", None
+            logger.exception(f"Unexpected error in AgentBrain: {e}")
+            return {
+                "response_type": "error",
+                "content": None,
+                "message": "Oops! An unexpected glitch happened. Can you try again?"
+            }
+
+    def _execute_tool(self, tool_name: str, arguments: Dict[str, str]) -> Dict[str, Any]:
+        """
+        Execute a tool with given arguments (not directly called; used internally).
+
+        Args:
+            tool_name: Name of the tool to execute.
+            arguments: Dictionary of tool arguments.
+
+        Returns:
+            Tool execution result.
+        """
+        if tool_name in self.tools:
+            return self.tools[tool_name](**arguments)
+        else:
+            logger.error(f"Tool {tool_name} not found")
+            return {"status": "error", "message": f"Tool {tool_name} is not available."}

@@ -1,0 +1,108 @@
+# restaurants.py (Updated for Pydantic v2)
+import json
+import logging
+from typing import List, Optional, Dict, Any, Union
+from pydantic import BaseModel, Field, field_validator, ValidationError
+import re
+
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+
+class Restaurant(BaseModel):
+    id: str = Field(..., pattern=r'^[a-zA-Z0-9]+$', description="Alphanumeric ID (e.g., 'del001')")
+    name: str = Field(..., min_length=3)
+    location: str = Field(..., description="Exact Delhi neighborhood/area")
+    cuisine: str = Field(..., description="Primary cuisine type")
+    opening_hours: Dict[str, str] = Field(..., description="Format: {'Days': 'HH:MM AM/PM - HH:MM AM/PM'}")
+    max_capacity: int = Field(..., gt=0)
+    address: str = Field(...)
+    phone: Optional[str] = Field(None, pattern=r'^\+?[0-9]{10,15}$')
+    description: Optional[str] = Field(None)
+    features: Optional[List[str]] = Field(None, description="e.g., ['veg-friendly', 'outdoor-seating']")
+    rating: Optional[float] = Field(None, ge=1.0, le=5.0)
+
+    @field_validator('id')
+    def normalize_id(cls, v):
+        return v.lower()
+
+    @field_validator('opening_hours')
+    def validate_hours_format(cls, v):
+        for days, hours in v.items():
+            if not re.match(r'^\d{1,2}:\d{2} [AP]M - \d{1,2}:\d{2} [AP]M$', hours):
+                raise ValueError(f"Invalid hours format: {hours}")
+        return v
+
+class RestaurantRepository:
+    _instance = None
+
+    def __new__(cls, data_source: Optional[Union[str, List[Dict[str, Any]]]] = None):
+        if not cls._instance:
+            cls._instance = super().__new__(cls)
+            cls._instance._initialized = False
+        return cls._instance
+
+    def __init__(self, data_source: Optional[Union[str, List[Dict[str, Any]]]] = None):
+        if self._initialized:
+            return
+        self._restaurants: Dict[str, Restaurant] = {}
+        self._load_data(data_source or self._get_delhi_data())
+        self._initialized = True
+        logger.info(f"Loaded {len(self._restaurants)} Delhi restaurants")
+
+    def _load_data(self, data_source):
+        raw_data = []
+        if isinstance(data_source, str):
+            try:
+                with open(data_source, 'r', encoding='utf-8') as f:
+                    raw_data = json.load(f)
+            except Exception as e:
+                logger.error(f"Data load error: {e}")
+                raw_data = self._get_delhi_data()
+        elif isinstance(data_source, list):
+            raw_data = data_source
+        else:
+            raw_data = self._get_delhi_data()
+
+        valid_count = 0
+        processed_ids = set()
+        for item in raw_data:
+            try:
+                restaurant = Restaurant(**item)
+                if restaurant.id in processed_ids:
+                    logger.warning(f"Duplicate ID found: {restaurant.id}")
+                    continue
+                self._restaurants[restaurant.id] = restaurant
+                processed_ids.add(restaurant.id)
+                valid_count += 1
+            except ValidationError as e:
+                logger.error(f"Validation failed for {item.get('name')}: {e}")
+        logger.info(f"Validated {valid_count}/{len(raw_data)} restaurants")
+
+    def _get_delhi_data(self) -> List[Dict[str, Any]]:
+        return [
+            # ... (keep your existing restaurant data)
+        ]
+
+    def search(self,
+               cuisine: Optional[str] = None,
+               location: Optional[str] = None,
+               min_capacity: Optional[int] = None,
+               features: Optional[List[str]] = None) -> List[Restaurant]:
+        results = list(self._restaurants.values())
+        
+        if cuisine:
+            results = [r for r in results if cuisine.lower() == r.cuisine.lower()]
+        
+        if location:
+            results = [r for r in results if location.lower() == r.location.lower()]
+        
+        if min_capacity:
+            results = [r for r in results if r.max_capacity >= min_capacity]
+        
+        if features:
+            required = set([f.lower() for f in features])
+            results = [r for r in results if r.features and required.issubset(set(r.features))]
+        
+        return results
+
+RESTAURANT_DATA = RestaurantRepository()
