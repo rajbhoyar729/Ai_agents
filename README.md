@@ -168,7 +168,6 @@ This project is licensed under the MIT License. See [LICENSE](LICENSE) for detai
 - Replace `https://github.com/yourusername/foodiespot-ai.git` with your actual repository URL once hosted.
 - Add a `requirements.txt` file with `streamlit`, `groq`, and `python-dotenv` for easier setup.
 - Ensure `.env` is added to `.gitignore` to protect your API key.
-```
 
 ---
 
@@ -193,13 +192,14 @@ This project is licensed under the MIT License. See [LICENSE](LICENSE) for detai
   groq==0.4.0
   python-dotenv==1.0.0
   ```
-  Then update the README’s install step accordingly.
+Then update the README’s install step accordingly.
 - **License File**: Add a basic MIT License file if desired:
-  ```
-  MIT License
+   ```
+   MIT License
 
   Copyright (c) 2025 [Raj Bhoyar]
 
   Permission is hereby granted, free of charge, to any person obtaining a copy...
+  
   ```
 
