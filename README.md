@@ -1,5 +1,4 @@
 
-```markdown
 # FoodieSpot AI Reservation Assistant
 
 **A modern, AI-powered restaurant reservation system for Delhi foodies.**
