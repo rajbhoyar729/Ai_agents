@@ -1,153 +1,121 @@
+# FILE: app.py
 import streamlit as st
 import logging
-from typing import Dict, List
-from main import process_input, MainProcessor  # Import from main.py
+from main import MainProcessor  # Import the central processor
 
-# Logging Setup
+# --- Logging Setup ---
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
 
-# Page Configuration
+# --- Page Configuration ---
 st.set_page_config(
-    page_title="FoodieSpot Chat",
+    page_title="FoodieSpot AI Assistant",
     page_icon="🍽️",
     layout="centered",
     initial_sidebar_state="collapsed"
 )
 
-# Custom CSS for Simple, Clean Design
+# --- Custom CSS (Optional - for minor tweaks if needed) ---
+# st.chat_message provides good defaults, so extensive CSS might not be necessary
 CUSTOM_CSS = """
 <style>
-    .header {
-        background-color: #4CAF50;  /* Simple green for a food theme */
-        color: white;
-        padding: 1rem;
-        text-align: center;
-        font-size: 1.5rem;
-        font-weight: bold;
-        margin-bottom: 1rem;
+    /* Target the Streamlit chat container for potential height limits */
+    .stChatFloatingInputContainer {
+        bottom: 0rem; /* Adjust if input overlaps content */
     }
-    .chat-container {
-        max-height: 500px;
-        overflow-y: auto;
-        padding: 1rem;
-        background-color: #f9f9f9;  /* Light gray for contrast */
-        border-radius: 8px;
-        margin-bottom: 1rem;
-    }
-    .user-message {
-        background-color: #4CAF50;
-        color: white;
-        padding: 0.8rem;
-        border-radius: 8px;
-        margin: 0.5rem 0;
-        text-align: right;
-        max-width: 80%;
-        margin-left: auto;
-    }
-    .bot-message {
-        background-color: #ffffff;
-        color: #333;
-        padding: 0.8rem;
-        border-radius: 8px;
-        margin: 0.5rem 0;
-        text-align: left;
-        max-width: 80%;
-        border: 1px solid #ddd;
-    }
-    .input-container {
-        display: flex;
-        gap: 0.5rem;
-        padding: 1rem;
-    }
-    .stTextInput > div > div > input {
-        border-radius: 8px;
-        padding: 0.5rem;
-    }
-    .stButton > button {
-        background-color: #4CAF50;
-        color: white;
-        border-radius: 8px;
-        padding: 0.5rem 1rem;
-    }
-    ::-webkit-scrollbar {
-        width: 6px;
-    }
-    ::-webkit-scrollbar-thumb {
-        background: #888;
-        border-radius: 3px;
-    }
+    /* You can add more specific styling here if desired */
 </style>
 """
+st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
 
-def initialize_session_state(processor: MainProcessor):
-    """Initialize session state and sync with MainProcessor."""
+# --- State Management ---
+def initialize_state():
+    """Initializes session state variables if they don't exist."""
+    # Initialize the main processor ONCE per session
+    if 'main_processor' not in st.session_state:
+        try:
+            st.session_state.main_processor = MainProcessor()
+            logger.info("MainProcessor initialized and stored in session state.")
+        except Exception as e:
+            logger.error(f"Failed to initialize MainProcessor: {e}", exc_info=True)
+            st.error(f"Critical Error: Could not initialize the AI assistant. Please check logs or environment variables (like GROQ_API_KEY). Error: {e}", icon="🚨")
+            # Halt execution for this user if processor fails
+            st.stop()
+
+    # Initialize chat history for display
     if 'messages' not in st.session_state:
         st.session_state.messages = [
-            {"role": "bot", "content": "Hello! How can I assist you with your dining today?"}
+            {"role": "assistant", "content": "Namaste! 🙏 I'm FoodieBot. How can I help you find the perfect dining spot in Delhi today?"}
         ]
-    # Sync with main.py’s conversation history on first load
-    if len(st.session_state.messages) == 1:  # Only initial message
-        st.session_state.messages.extend(
-            [{"role": msg["role"], "content": msg["content"]} for msg in processor.get_conversation_history()]
-        )
+        logger.info("Chat history initialized.")
 
-def display_header():
-    """Render the chat header."""
-    st.markdown(
-        '<div class="header">🍽️ FoodieSpot Chat</div>',
-        unsafe_allow_html=True
-    )
+    # Sync processor's history if it exists and display history is minimal (optional refinement)
+    # This ensures if the processor had some initial state/history, it could be reflected.
+    # However, with the current setup, the processor starts fresh too.
+    # processor = st.session_state.main_processor
+    # if processor and len(st.session_state.messages) == 1 and processor.get_conversation_history():
+    #     # Logic to potentially merge histories if needed, complex and often not required
+    #     pass
 
-def display_chat():
-    """Render the conversation history."""
-    st.markdown('<div class="chat-container">', unsafe_allow_html=True)
+# --- UI Rendering ---
+def render_chat_interface():
+    """Renders the main chat UI elements."""
+    st.title("🍽️ FoodieSpot AI Assistant")
+    st.caption("Your friendly guide to dining in Delhi")
+
+    # Display existing chat messages
     for message in st.session_state.messages:
-        if message["role"] == "user":
-            st.markdown(
-                f'<div class="user-message">{message["content"]}</div>',
-                unsafe_allow_html=True
-            )
-        else:  # bot or system (treated as bot here for simplicity)
-            st.markdown(
-                f'<div class="bot-message">{message["content"]}</div>',
-                unsafe_allow_html=True
-            )
-    st.markdown('</div>', unsafe_allow_html=True)
+        with st.chat_message(message["role"]):
+            st.markdown(message["content"]) # Use markdown for potential formatting
 
-def handle_input(processor: MainProcessor):
-    """Process user input and interact with main.py."""
-    with st.form(key="chat_form", clear_on_submit=True):
-        col1, col2 = st.columns([4, 1])
-        with col1:
-            user_input = st.text_input("Type your message...", key="chat_input", label_visibility="collapsed")
-        with col2:
-            submit_button = st.form_submit_button("Send")
+    # Main chat input
+    if prompt := st.chat_input("Ask me about Delhi restaurants... (e.g., 'Find North Indian places in CP')"):
+        logger.info(f"User input received: {prompt}")
 
-        if submit_button and user_input:
-            logger.info(f"User input: {user_input}")
-            st.session_state.messages.append({"role": "user", "content": user_input})
+        # Add user message to display state immediately
+        st.session_state.messages.append({"role": "user", "content": prompt})
+        # Display user message
+        with st.chat_message("user"):
+            st.markdown(prompt)
 
-            # Process via main.py
-            response = processor.process_user_input(user_input)
-            if response["status"] == "success":
-                st.session_state.messages.append({"role": "bot", "content": response["message"]})
-            else:
-                st.session_state.messages.append({"role": "bot", "content": f"Error: {response['message']}"})
-            
-            st.rerun()
+        # Process the input using the persistent MainProcessor
+        processor: MainProcessor = st.session_state.main_processor
+        if not processor:
+             st.error("Assistant is not available due to an earlier initialization error.", icon="🚨")
+             st.stop()
 
-def main():
-    """Main function to run the chat UI."""
-    st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
-    processor = MainProcessor()  # Persistent instance for history sync
-    initialize_session_state(processor)
-    display_header()
-    display_chat()
-    handle_input(processor)
+        # Show a thinking indicator
+        with st.chat_message("assistant"):
+            with st.spinner("FoodieBot is thinking..."):
+                try:
+                    logger.debug(f"Sending to processor. Current history length for processor: {len(processor.get_conversation_history())}")
+                    response = processor.process_user_input(prompt) # main.py handles its internal history now
+                    logger.debug(f"Received response from processor: status={response['status']}")
 
+                    if response["status"] == "success":
+                        bot_message = response["message"]
+                        st.markdown(bot_message)
+                    else:
+                        # Display error message clearly but as a bot response
+                        error_message = f"😥 Oops! {response['message']}"
+                        st.warning(error_message) # Use warning/error styling within the chat
+                        bot_message = error_message # Store the error message for history
+
+                    # Add bot response to display state
+                    st.session_state.messages.append({"role": "assistant", "content": bot_message})
+
+                except Exception as e:
+                    logger.error(f"Error processing user input in app.py: {e}", exc_info=True)
+                    error_text = "Sorry, I encountered an unexpected technical glitch. Please try asking again differently or refresh the page."
+                    st.error(error_text, icon="🔥")
+                    st.session_state.messages.append({"role": "assistant", "content": error_text})
+
+        # No explicit st.rerun() needed with st.chat_input, it triggers automatically.
+
+# --- Main Execution ---
 if __name__ == "__main__":
-    main()
+    initialize_state()
+    render_chat_interface()
