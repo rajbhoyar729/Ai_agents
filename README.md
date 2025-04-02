@@ -26,8 +26,8 @@ FoodieSpot AI Reservation Assistant is a modular, user-centric application desig
 ### Installation
 1. **Clone the Repository**:
    ```bash
-   git clone https://github.com/yourusername/foodiespot-ai.git
-   cd foodiespot-ai
+   git clone https://github.com/rajbhoyar729/Ai_agents.git
+   cd Ai_agents
    ```
 
 2. **Set Up a Virtual Environment** (optional but recommended):
