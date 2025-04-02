@@ -40,7 +40,7 @@ FoodieSpot AI Reservation Assistant is a modular, user-centric application desig
    ```bash
    pip install -r requirements.txt
    ```
-   *Note*: If `requirements.txt` isn’t provided, install manually:
+   *Note*: If `requirements.txt` isn’t there , install manually:
    ```bash
    pip install streamlit groq python-dotenv
    ```
